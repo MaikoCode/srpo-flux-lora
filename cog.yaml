@@ -4,10 +4,16 @@ build:
   python_version: "3.11"
   python_requirements: requirements.txt
   system_packages:
+    - "aria2"
     - "ffmpeg"
     - "libgl1"
     - "libglib2.0-0"
   run:
     - git clone --depth 1 --branch v0.13.0 https://github.com/Comfy-Org/ComfyUI.git
     - pip install -r ComfyUI/requirements.txt
+    - mkdir -p ComfyUI/models/checkpoints ComfyUI/models/vae ComfyUI/models/clip ComfyUI/models/loras
+    - aria2c -x16 -s16 -k1M -c "https://huggingface.co/Maikoke/srpo-base/resolve/main/srpoRefineQuantizedFp16_v10Fp16.safetensors" -d ComfyUI/models/checkpoints -o srpoRefineQuantizedFp16_v10Fp16.safetensors
+    - aria2c -x16 -s16 -k1M -c "https://huggingface.co/Owen777/UltraFlux-v1/resolve/main/vae/diffusion_pytorch_model.safetensors" -d ComfyUI/models/vae -o UltraFlux-v1.safetensors
+    - aria2c -x16 -s16 -k1M -c "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/clip_l.safetensors" -d ComfyUI/models/clip -o clip_l.safetensors
+    - aria2c -x16 -s16 -k1M -c "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp16.safetensors" -d ComfyUI/models/clip -o t5xxl_fp16.safetensors
 predict: "predict.py:Predictor"

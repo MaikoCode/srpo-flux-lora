@@ -216,6 +216,20 @@ def ensure_downloaded(
     )
 
 
+def ensure_file_present(path: str, min_size: int, label: str) -> None:
+    if not os.path.exists(path):
+        raise RuntimeError(
+            f"Missing required pre-baked file for {label}: {path}. "
+            f"Rebuild and push the model image to include base weights."
+        )
+    size = os.path.getsize(path)
+    if size < min_size:
+        raise RuntimeError(
+            f"Invalid pre-baked file for {label}: {path} has {size} bytes, "
+            f"expected at least {min_size} bytes. Rebuild the image."
+        )
+
+
 def list_files_recursive(directory: str) -> List[str]:
     if not os.path.isdir(directory):
         return []
@@ -343,48 +357,31 @@ class Predictor(BasePredictor):
         self._is_ready = False
         print("[setup] Setup complete (lazy runtime init enabled).")
 
-    def _ensure_base_models_downloaded(self, civitai_token: str = "") -> None:
-        print("[runtime-init] Ensuring base models are downloaded...")
-
-        checkpoint_url = CHECKPOINT_URL
-        checkpoint_host = urllib.parse.urlparse(CHECKPOINT_URL).netloc.lower()
-        if "civitai.com" in checkpoint_host:
-            # CivitAI requires an API token for most model downloads.
-            # Priority: prediction input token -> environment variable.
-            civitai_token = civitai_token.strip() or os.environ.get("CIVITAI_API_TOKEN", "").strip()
-            if civitai_token:
-                checkpoint_url = append_query_param(CHECKPOINT_URL, "token", civitai_token)
-                print("[runtime-init] Using CivitAI API token for checkpoint download.")
-            else:
-                print(
-                    "[runtime-init] WARNING: No CivitAI token provided in input and "
-                    "no CIVITAI_API_TOKEN env var set. "
-                    "CivitAI downloads may fail if authentication is required."
-                )
-
-        ensure_downloaded(
-            checkpoint_url,
+    def _ensure_base_models_present(self) -> None:
+        print("[runtime-init] Validating pre-baked base models...")
+        ensure_file_present(
             os.path.join("ComfyUI/models/checkpoints", CHECKPOINT_FILENAME),
-            min_size=1024 * 1024 * 100,  # SRPO checkpoint should be >100 MB
+            min_size=1024 * 1024 * 100,
+            label="checkpoint",
         )
-        ensure_downloaded(
-            VAE_URL,
+        ensure_file_present(
             os.path.join("ComfyUI/models/vae", VAE_FILENAME),
-            min_size=1024 * 1024 * 100,  # VAE should be >100 MB
+            min_size=1024 * 1024 * 100,
+            label="vae",
         )
-        ensure_downloaded(
-            CLIP_L_URL,
+        ensure_file_present(
             os.path.join("ComfyUI/models/clip", CLIP_L_FILENAME),
-            min_size=1024 * 1024 * 100,  # CLIP_L should be >100 MB
+            min_size=1024 * 1024 * 100,
+            label="clip_l",
         )
-        ensure_downloaded(
-            T5_URL,
+        ensure_file_present(
             os.path.join("ComfyUI/models/clip", T5_FILENAME),
-            min_size=1024 * 1024 * 1000,  # T5 should be >1 GB
+            min_size=1024 * 1024 * 1000,
+            label="t5xxl_fp16",
         )
-        print("[runtime-init] Base models ready.")
+        print("[runtime-init] Base models are present.")
 
-    def _ensure_ready(self, civitai_token: str = "") -> None:
+    def _ensure_ready(self) -> None:
         if self._is_ready and self.comfy.is_server_running():
             return
 
@@ -393,7 +390,7 @@ class Predictor(BasePredictor):
                 return
 
             print("[runtime-init] Initializing runtime dependencies...")
-            self._ensure_base_models_downloaded(civitai_token=civitai_token)
+            self._ensure_base_models_present()
 
             if not self.comfy.is_server_running():
                 print("[runtime-init] Starting ComfyUI server...")
@@ -508,10 +505,7 @@ class Predictor(BasePredictor):
         guidance: float = Input(description="Flux guidance", default=3.5, ge=0.1, le=20.0),
         seed: Optional[int] = Input(description="Seed (random if omitted)", default=None),
         civitai_api_key: Optional[Secret] = Input(
-            description=(
-                "Optional CivitAI API key for private/gated LoRA URLs and "
-                "for base checkpoint download auth if required"
-            ),
+            description="Optional CivitAI API key for private/gated LoRA URLs",
             default=None,
         ),
         huggingface_token: Optional[Secret] = Input(
@@ -519,11 +513,7 @@ class Predictor(BasePredictor):
             default=None,
         ),
     ) -> List[Path]:
-        runtime_civitai_token = ""
-        if civitai_api_key is not None:
-            runtime_civitai_token = civitai_api_key.get_secret_value().strip()
-
-        self._ensure_ready(civitai_token=runtime_civitai_token)
+        self._ensure_ready()
         self.comfy.clear_queue()
         self._cleanup_prediction_dirs()
 
