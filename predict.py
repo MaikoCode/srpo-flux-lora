@@ -248,7 +248,16 @@ class Predictor(BasePredictor):
         ensure_dir("ComfyUI/models/clip")
         ensure_dir("ComfyUI/models/loras")
 
-        print("[setup] Downloading models...")
+        with open(WORKFLOW_PATH, "r", encoding="utf-8") as file:
+            self.base_workflow = json.load(file)
+
+        self.comfy = ComfyRunner(COMFY_HOST)
+        self._ready_lock = threading.Lock()
+        self._is_ready = False
+        print("[setup] Setup complete (lazy runtime init enabled).")
+
+    def _ensure_base_models_downloaded(self) -> None:
+        print("[runtime-init] Ensuring base models are downloaded...")
         ensure_downloaded(
             CHECKPOINT_URL,
             os.path.join("ComfyUI/models/checkpoints", CHECKPOINT_FILENAME),
@@ -269,15 +278,25 @@ class Predictor(BasePredictor):
             os.path.join("ComfyUI/models/clip", T5_FILENAME),
             min_size=1024 * 1024,
         )
-        print("[setup] All models downloaded successfully.")
+        print("[runtime-init] Base models ready.")
 
-        with open(WORKFLOW_PATH, "r", encoding="utf-8") as file:
-            self.base_workflow = json.load(file)
+    def _ensure_ready(self) -> None:
+        if self._is_ready and self.comfy.is_server_running():
+            return
 
-        print("[setup] Starting ComfyUI server...")
-        self.comfy = ComfyRunner(COMFY_HOST)
-        self.comfy.start_server()
-        print("[setup] Setup complete.")
+        with self._ready_lock:
+            if self._is_ready and self.comfy.is_server_running():
+                return
+
+            print("[runtime-init] Initializing runtime dependencies...")
+            self._ensure_base_models_downloaded()
+
+            if not self.comfy.is_server_running():
+                print("[runtime-init] Starting ComfyUI server...")
+                self.comfy.start_server()
+
+            self._is_ready = True
+            print("[runtime-init] Runtime initialization complete.")
 
     @staticmethod
     def _cleanup_prediction_dirs() -> None:
@@ -383,6 +402,7 @@ class Predictor(BasePredictor):
             default=None,
         ),
     ) -> List[Path]:
+        self._ensure_ready()
         self.comfy.clear_queue()
         self._cleanup_prediction_dirs()
 

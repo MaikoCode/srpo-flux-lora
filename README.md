@@ -9,7 +9,9 @@ This Cog model runs your fixed SRPO workflow on Replicate and lets the caller pr
 - VAE:
   - `https://huggingface.co/Owen777/UltraFlux-v1/resolve/main/vae/diffusion_pytorch_model.safetensors`
 
-These are downloaded on the Replicate worker during `setup()`, not on your local machine.
+These are downloaded on the Replicate worker during the first prediction on each container (lazy runtime init), not on your local machine.
+
+This avoids Replicate setup timeout issues for very large models. The first request on a cold container will be slower; warm requests on the same container reuse the downloaded files.
 
 ## Inputs exposed as API
 
