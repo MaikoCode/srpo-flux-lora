@@ -66,7 +66,19 @@ def streamed_download(
     destination: str,
     headers: Optional[dict] = None,
     max_retries: int = 3,
+    expected_min_size: int = 0,
 ) -> None:
+    """Download a file with retries, progress logging, and content validation.
+
+    Args:
+        url: URL to download from.
+        destination: Local path to save the file.
+        headers: Extra HTTP headers.
+        max_retries: Number of download attempts.
+        expected_min_size: Minimum expected file size in bytes.  If the
+            downloaded file is smaller than this, the download is considered
+            failed (likely an error page or redirect to login).
+    """
     ensure_dir(os.path.dirname(destination))
     tmp_destination = destination + ".part"
 
@@ -84,22 +96,65 @@ def streamed_download(
             with requests.get(
                 url,
                 stream=True,
-                timeout=(30, 600),
+                timeout=(30, 1800),
                 headers=default_headers,
                 allow_redirects=True,
             ) as response:
                 response.raise_for_status()
+
+                # --- Content-type validation ---
+                content_type = response.headers.get("content-type", "").lower()
+                if "text/html" in content_type or "text/plain" in content_type:
+                    # Read a small snippet for the error message
+                    snippet = next(response.iter_content(chunk_size=512), b"")
+                    raise RuntimeError(
+                        f"Server returned content-type '{content_type}' instead of a "
+                        f"binary file. This usually means authentication is required "
+                        f"or the URL is invalid. Response preview: "
+                        f"{snippet[:200]!r}"
+                    )
+
                 total = response.headers.get("content-length")
+                total_bytes = int(total) if total else None
                 downloaded = 0
+                last_log_time = time.time()
+
                 with open(tmp_destination, "wb") as handle:
                     for chunk in response.iter_content(chunk_size=1024 * 1024):
                         if chunk:
                             handle.write(chunk)
                             downloaded += len(chunk)
-                if total and int(total) > 0 and downloaded < int(total):
+                            # Log progress every 10 seconds
+                            now = time.time()
+                            if now - last_log_time >= 10:
+                                dl_mb = downloaded / (1024 * 1024)
+                                if total_bytes:
+                                    pct = downloaded / total_bytes * 100
+                                    total_mb = total_bytes / (1024 * 1024)
+                                    print(
+                                        f"[download] Progress: {dl_mb:.1f} / "
+                                        f"{total_mb:.1f} MB ({pct:.1f}%)"
+                                    )
+                                else:
+                                    print(f"[download] Progress: {dl_mb:.1f} MB")
+                                last_log_time = now
+
+                if total_bytes and total_bytes > 0 and downloaded < total_bytes:
                     raise RuntimeError(
-                        f"Incomplete download: got {downloaded} bytes, expected {total}"
+                        f"Incomplete download: got {downloaded} bytes, "
+                        f"expected {total_bytes}"
                     )
+
+                # --- Post-download size validation ---
+                if expected_min_size > 0 and downloaded < expected_min_size:
+                    raise RuntimeError(
+                        f"Downloaded file is too small: {downloaded} bytes, "
+                        f"expected at least {expected_min_size} bytes "
+                        f"({expected_min_size / (1024*1024):.1f} MB). "
+                        f"The URL likely returned an error page or requires "
+                        f"authentication."
+                    )
+
             os.replace(tmp_destination, destination)
             size_mb = os.path.getsize(destination) / (1024 * 1024)
             print(f"[download] Success: {destination} ({size_mb:.1f} MB)")
@@ -126,7 +181,12 @@ def ensure_downloaded(
     if os.path.exists(destination) and os.path.getsize(destination) >= min_size:
         print(f"[download] Already exists: {destination}")
         return
-    streamed_download(url=url, destination=destination, headers=headers)
+    streamed_download(
+        url=url,
+        destination=destination,
+        headers=headers,
+        expected_min_size=min_size,
+    )
 
 
 def list_files_recursive(directory: str) -> List[str]:
@@ -258,25 +318,39 @@ class Predictor(BasePredictor):
 
     def _ensure_base_models_downloaded(self) -> None:
         print("[runtime-init] Ensuring base models are downloaded...")
+
+        # CivitAI requires an API token for most model downloads.
+        # Set CIVITAI_API_TOKEN as a Replicate secret or environment variable.
+        civitai_token = os.environ.get("CIVITAI_API_TOKEN", "").strip()
+        checkpoint_url = CHECKPOINT_URL
+        if civitai_token:
+            checkpoint_url = append_query_param(CHECKPOINT_URL, "token", civitai_token)
+            print("[runtime-init] Using CivitAI API token for checkpoint download.")
+        else:
+            print(
+                "[runtime-init] WARNING: No CIVITAI_API_TOKEN set. "
+                "CivitAI downloads may fail if authentication is required."
+            )
+
         ensure_downloaded(
-            CHECKPOINT_URL,
+            checkpoint_url,
             os.path.join("ComfyUI/models/checkpoints", CHECKPOINT_FILENAME),
-            min_size=1024 * 1024,
+            min_size=1024 * 1024 * 100,  # SRPO checkpoint should be >100 MB
         )
         ensure_downloaded(
             VAE_URL,
             os.path.join("ComfyUI/models/vae", VAE_FILENAME),
-            min_size=1024 * 1024,
+            min_size=1024 * 1024 * 100,  # VAE should be >100 MB
         )
         ensure_downloaded(
             CLIP_L_URL,
             os.path.join("ComfyUI/models/clip", CLIP_L_FILENAME),
-            min_size=1024 * 1024,
+            min_size=1024 * 1024 * 100,  # CLIP_L should be >100 MB
         )
         ensure_downloaded(
             T5_URL,
             os.path.join("ComfyUI/models/clip", T5_FILENAME),
-            min_size=1024 * 1024,
+            min_size=1024 * 1024 * 1000,  # T5 should be >1 GB
         )
         print("[runtime-init] Base models ready.")
 
@@ -318,8 +392,13 @@ class Predictor(BasePredictor):
         url = normalize_civitai_url(lora_url.strip())
 
         parsed = urllib.parse.urlparse(url)
-        if "civitai.com" in parsed.netloc and civitai_api_key is not None:
-            key = civitai_api_key.get_secret_value().strip()
+        if "civitai.com" in parsed.netloc:
+            # Try per-request key first, then env var fallback
+            key = ""
+            if civitai_api_key is not None:
+                key = civitai_api_key.get_secret_value().strip()
+            if not key:
+                key = os.environ.get("CIVITAI_API_TOKEN", "").strip()
             if key:
                 url = append_query_param(url, "token", key)
 
@@ -335,7 +414,12 @@ class Predictor(BasePredictor):
 
         filename = f"lora_{self._hash_url(url)}{extension}"
         destination = os.path.join("ComfyUI/models/loras", filename)
-        ensure_downloaded(url=url, destination=destination, headers=headers)
+        ensure_downloaded(
+            url=url,
+            destination=destination,
+            headers=headers,
+            min_size=1024 * 100,  # LoRA should be at least ~100 KB
+        )
         return filename
 
     def _build_workflow(
