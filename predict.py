@@ -61,6 +61,29 @@ def normalize_civitai_url(url: str) -> str:
     return url
 
 
+def redact_url_for_log(url: str) -> str:
+    try:
+        parsed = urllib.parse.urlparse(url)
+        query = urllib.parse.parse_qs(parsed.query)
+        sensitive_keys = {
+            "token",
+            "api_key",
+            "apikey",
+            "key",
+            "auth",
+            "authorization",
+            "access_token",
+        }
+        for key in list(query.keys()):
+            if key.lower() in sensitive_keys:
+                query[key] = ["***"]
+        return urllib.parse.urlunparse(
+            parsed._replace(query=urllib.parse.urlencode(query, doseq=True))
+        )
+    except Exception:
+        return url
+
+
 def streamed_download(
     url: str,
     destination: str,
@@ -90,9 +113,13 @@ def streamed_download(
         default_headers.update(headers)
 
     last_error: Optional[Exception] = None
+    redacted_url = redact_url_for_log(url)
     for attempt in range(1, max_retries + 1):
         try:
-            print(f"[download] Attempt {attempt}/{max_retries}: {url} -> {destination}")
+            print(
+                f"[download] Attempt {attempt}/{max_retries}: "
+                f"{redacted_url} -> {destination}"
+            )
             with requests.get(
                 url,
                 stream=True,
@@ -168,7 +195,7 @@ def streamed_download(
                 time.sleep(5 * attempt)
 
     raise RuntimeError(
-        f"Failed to download {url} after {max_retries} attempts: {last_error}"
+        f"Failed to download {redacted_url} after {max_retries} attempts: {last_error}"
     )
 
 
