@@ -8,6 +8,6 @@ build:
     - "libgl1"
     - "libglib2.0-0"
   run:
-    - git clone https://github.com/comfyanonymous/ComfyUI.git
+    - git clone --depth 1 --branch v0.13.0 https://github.com/Comfy-Org/ComfyUI.git
     - pip install -r ComfyUI/requirements.txt
 predict: "predict.py:Predictor"

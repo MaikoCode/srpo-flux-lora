@@ -91,8 +91,7 @@
     "inputs": {
       "clip_name1": "t5xxl_fp16.safetensors",
       "clip_name2": "clip_l.safetensors",
-      "type": "flux",
-      "device": "default"
+      "type": "flux"
     },
     "class_type": "DualCLIPLoader",
     "_meta": {
@@ -151,52 +150,6 @@
     "class_type": "VAELoader",
     "_meta": {
       "title": "Load VAE"
-    }
-  },
-  "572": {
-    "inputs": {
-      "model_name": "RealESRGAN_x4plus.pth"
-    },
-    "class_type": "UpscaleModelLoader",
-    "_meta": {
-      "title": "Load Upscale Model"
-    }
-  },
-  "573": {
-    "inputs": {
-      "upscale_model": [
-        "572",
-        0
-      ],
-      "image": [
-        "52",
-        0
-      ]
-    },
-    "class_type": "ImageUpscaleWithModel",
-    "_meta": {
-      "title": "Upscale Image (using Model)"
-    }
-  },
-  "574": {
-    "inputs": {
-      "images": [
-        "573",
-        0
-      ]
-    },
-    "class_type": "PreviewImage",
-    "_meta": {
-      "title": "Preview Image"
-    }
-  },
-  "575": {
-    "inputs": {
-      "ckpt_name": "512-inpainting-ema.safetensors"
-    },
-    "class_type": "CheckpointLoaderSimple",
-    "_meta": {
-      "title": "Load Checkpoint"
     }
   },
   "576": {

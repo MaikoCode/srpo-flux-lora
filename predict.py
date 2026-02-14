@@ -61,22 +61,70 @@ def normalize_civitai_url(url: str) -> str:
     return url
 
 
-def streamed_download(url: str, destination: str, headers: Optional[dict] = None) -> None:
+def streamed_download(
+    url: str,
+    destination: str,
+    headers: Optional[dict] = None,
+    max_retries: int = 3,
+) -> None:
     ensure_dir(os.path.dirname(destination))
     tmp_destination = destination + ".part"
 
-    with requests.get(url, stream=True, timeout=120, headers=headers or {}) as response:
-        response.raise_for_status()
-        with open(tmp_destination, "wb") as handle:
-            for chunk in response.iter_content(chunk_size=1024 * 1024):
-                if chunk:
-                    handle.write(chunk)
+    default_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    }
+    if headers:
+        default_headers.update(headers)
 
-    os.replace(tmp_destination, destination)
+    last_error: Optional[Exception] = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            print(f"[download] Attempt {attempt}/{max_retries}: {url} -> {destination}")
+            with requests.get(
+                url,
+                stream=True,
+                timeout=(30, 600),
+                headers=default_headers,
+                allow_redirects=True,
+            ) as response:
+                response.raise_for_status()
+                total = response.headers.get("content-length")
+                downloaded = 0
+                with open(tmp_destination, "wb") as handle:
+                    for chunk in response.iter_content(chunk_size=1024 * 1024):
+                        if chunk:
+                            handle.write(chunk)
+                            downloaded += len(chunk)
+                if total and int(total) > 0 and downloaded < int(total):
+                    raise RuntimeError(
+                        f"Incomplete download: got {downloaded} bytes, expected {total}"
+                    )
+            os.replace(tmp_destination, destination)
+            size_mb = os.path.getsize(destination) / (1024 * 1024)
+            print(f"[download] Success: {destination} ({size_mb:.1f} MB)")
+            return
+        except Exception as exc:
+            last_error = exc
+            print(f"[download] Attempt {attempt} failed: {exc}")
+            if os.path.exists(tmp_destination):
+                os.remove(tmp_destination)
+            if attempt < max_retries:
+                time.sleep(5 * attempt)
+
+    raise RuntimeError(
+        f"Failed to download {url} after {max_retries} attempts: {last_error}"
+    )
 
 
-def ensure_downloaded(url: str, destination: str, headers: Optional[dict] = None) -> None:
-    if os.path.exists(destination) and os.path.getsize(destination) > 0:
+def ensure_downloaded(
+    url: str,
+    destination: str,
+    headers: Optional[dict] = None,
+    min_size: int = 1024,
+) -> None:
+    if os.path.exists(destination) and os.path.getsize(destination) >= min_size:
+        print(f"[download] Already exists: {destination}")
         return
     streamed_download(url=url, destination=destination, headers=headers)
 
@@ -125,9 +173,9 @@ class ComfyRunner:
 
         start = time.time()
         while not self.is_server_running():
-            if time.time() - start > 90:
-                raise RuntimeError("ComfyUI server did not start in time")
-            time.sleep(0.5)
+            if time.time() - start > 300:
+                raise RuntimeError("ComfyUI server did not start within 300 seconds")
+            time.sleep(1)
 
     @staticmethod
     def _pipe_logs(stream) -> None:
@@ -190,6 +238,7 @@ class ComfyRunner:
 
 class Predictor(BasePredictor):
     def setup(self) -> None:
+        print("[setup] Starting setup...")
         ensure_dir(OUTPUT_DIR)
         ensure_dir(INPUT_DIR)
         ensure_dir(TEMP_DIR)
@@ -199,16 +248,36 @@ class Predictor(BasePredictor):
         ensure_dir("ComfyUI/models/clip")
         ensure_dir("ComfyUI/models/loras")
 
-        ensure_downloaded(CHECKPOINT_URL, os.path.join("ComfyUI/models/checkpoints", CHECKPOINT_FILENAME))
-        ensure_downloaded(VAE_URL, os.path.join("ComfyUI/models/vae", VAE_FILENAME))
-        ensure_downloaded(CLIP_L_URL, os.path.join("ComfyUI/models/clip", CLIP_L_FILENAME))
-        ensure_downloaded(T5_URL, os.path.join("ComfyUI/models/clip", T5_FILENAME))
+        print("[setup] Downloading models...")
+        ensure_downloaded(
+            CHECKPOINT_URL,
+            os.path.join("ComfyUI/models/checkpoints", CHECKPOINT_FILENAME),
+            min_size=1024 * 1024,
+        )
+        ensure_downloaded(
+            VAE_URL,
+            os.path.join("ComfyUI/models/vae", VAE_FILENAME),
+            min_size=1024 * 1024,
+        )
+        ensure_downloaded(
+            CLIP_L_URL,
+            os.path.join("ComfyUI/models/clip", CLIP_L_FILENAME),
+            min_size=1024 * 1024,
+        )
+        ensure_downloaded(
+            T5_URL,
+            os.path.join("ComfyUI/models/clip", T5_FILENAME),
+            min_size=1024 * 1024,
+        )
+        print("[setup] All models downloaded successfully.")
 
         with open(WORKFLOW_PATH, "r", encoding="utf-8") as file:
             self.base_workflow = json.load(file)
 
+        print("[setup] Starting ComfyUI server...")
         self.comfy = ComfyRunner(COMFY_HOST)
         self.comfy.start_server()
+        print("[setup] Setup complete.")
 
     @staticmethod
     def _cleanup_prediction_dirs() -> None:
@@ -265,9 +334,7 @@ class Predictor(BasePredictor):
     ) -> dict:
         workflow = copy.deepcopy(self.base_workflow)
 
-        for node_id in ["572", "573", "574", "575"]:
-            workflow.pop(node_id, None)
-
+        # Ensure output node is SaveImage (not PreviewImage)
         workflow["559"]["class_type"] = "SaveImage"
         workflow["559"]["inputs"]["filename_prefix"] = "srpo"
 
