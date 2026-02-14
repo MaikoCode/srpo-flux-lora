@@ -28,7 +28,7 @@ VAE_FILENAME = "UltraFlux-v1.safetensors"
 CLIP_L_FILENAME = "clip_l.safetensors"
 T5_FILENAME = "t5xxl_fp16.safetensors"
 
-CHECKPOINT_URL = "https://civitai.com/api/download/models/2220553?type=Model&format=SafeTensor&size=pruned&fp=fp16"
+CHECKPOINT_URL = "https://huggingface.co/Maikoke/srpo-base/resolve/main/srpoRefineQuantizedFp16_v10Fp16.safetensors"
 VAE_URL = "https://huggingface.co/Owen777/UltraFlux-v1/resolve/main/vae/diffusion_pytorch_model.safetensors"
 CLIP_L_URL = "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/clip_l.safetensors"
 T5_URL = "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp16.safetensors"
@@ -346,21 +346,21 @@ class Predictor(BasePredictor):
     def _ensure_base_models_downloaded(self, civitai_token: str = "") -> None:
         print("[runtime-init] Ensuring base models are downloaded...")
 
-        # CivitAI requires an API token for most model downloads.
-        # Priority: prediction input token -> environment variable.
-        # This allows users to pass the token in the prediction form when
-        # model-level secrets are not available in UI.
-        civitai_token = civitai_token.strip() or os.environ.get("CIVITAI_API_TOKEN", "").strip()
         checkpoint_url = CHECKPOINT_URL
-        if civitai_token:
-            checkpoint_url = append_query_param(CHECKPOINT_URL, "token", civitai_token)
-            print("[runtime-init] Using CivitAI API token for checkpoint download.")
-        else:
-            print(
-                "[runtime-init] WARNING: No CivitAI token provided in input and "
-                "no CIVITAI_API_TOKEN env var set. "
-                "CivitAI downloads may fail if authentication is required."
-            )
+        checkpoint_host = urllib.parse.urlparse(CHECKPOINT_URL).netloc.lower()
+        if "civitai.com" in checkpoint_host:
+            # CivitAI requires an API token for most model downloads.
+            # Priority: prediction input token -> environment variable.
+            civitai_token = civitai_token.strip() or os.environ.get("CIVITAI_API_TOKEN", "").strip()
+            if civitai_token:
+                checkpoint_url = append_query_param(CHECKPOINT_URL, "token", civitai_token)
+                print("[runtime-init] Using CivitAI API token for checkpoint download.")
+            else:
+                print(
+                    "[runtime-init] WARNING: No CivitAI token provided in input and "
+                    "no CIVITAI_API_TOKEN env var set. "
+                    "CivitAI downloads may fail if authentication is required."
+                )
 
         ensure_downloaded(
             checkpoint_url,
