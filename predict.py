@@ -316,19 +316,22 @@ class Predictor(BasePredictor):
         self._is_ready = False
         print("[setup] Setup complete (lazy runtime init enabled).")
 
-    def _ensure_base_models_downloaded(self) -> None:
+    def _ensure_base_models_downloaded(self, civitai_token: str = "") -> None:
         print("[runtime-init] Ensuring base models are downloaded...")
 
         # CivitAI requires an API token for most model downloads.
-        # Set CIVITAI_API_TOKEN as a Replicate secret or environment variable.
-        civitai_token = os.environ.get("CIVITAI_API_TOKEN", "").strip()
+        # Priority: prediction input token -> environment variable.
+        # This allows users to pass the token in the prediction form when
+        # model-level secrets are not available in UI.
+        civitai_token = civitai_token.strip() or os.environ.get("CIVITAI_API_TOKEN", "").strip()
         checkpoint_url = CHECKPOINT_URL
         if civitai_token:
             checkpoint_url = append_query_param(CHECKPOINT_URL, "token", civitai_token)
             print("[runtime-init] Using CivitAI API token for checkpoint download.")
         else:
             print(
-                "[runtime-init] WARNING: No CIVITAI_API_TOKEN set. "
+                "[runtime-init] WARNING: No CivitAI token provided in input and "
+                "no CIVITAI_API_TOKEN env var set. "
                 "CivitAI downloads may fail if authentication is required."
             )
 
@@ -354,7 +357,7 @@ class Predictor(BasePredictor):
         )
         print("[runtime-init] Base models ready.")
 
-    def _ensure_ready(self) -> None:
+    def _ensure_ready(self, civitai_token: str = "") -> None:
         if self._is_ready and self.comfy.is_server_running():
             return
 
@@ -363,7 +366,7 @@ class Predictor(BasePredictor):
                 return
 
             print("[runtime-init] Initializing runtime dependencies...")
-            self._ensure_base_models_downloaded()
+            self._ensure_base_models_downloaded(civitai_token=civitai_token)
 
             if not self.comfy.is_server_running():
                 print("[runtime-init] Starting ComfyUI server...")
@@ -478,7 +481,10 @@ class Predictor(BasePredictor):
         guidance: float = Input(description="Flux guidance", default=3.5, ge=0.1, le=20.0),
         seed: Optional[int] = Input(description="Seed (random if omitted)", default=None),
         civitai_api_key: Optional[Secret] = Input(
-            description="Optional CivitAI API key for private/gated LoRA URLs",
+            description=(
+                "Optional CivitAI API key for private/gated LoRA URLs and "
+                "for base checkpoint download auth if required"
+            ),
             default=None,
         ),
         huggingface_token: Optional[Secret] = Input(
@@ -486,7 +492,11 @@ class Predictor(BasePredictor):
             default=None,
         ),
     ) -> List[Path]:
-        self._ensure_ready()
+        runtime_civitai_token = ""
+        if civitai_api_key is not None:
+            runtime_civitai_token = civitai_api_key.get_secret_value().strip()
+
+        self._ensure_ready(civitai_token=runtime_civitai_token)
         self.comfy.clear_queue()
         self._cleanup_prediction_dirs()
 
