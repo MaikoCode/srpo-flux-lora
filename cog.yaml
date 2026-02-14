@@ -1,0 +1,13 @@
+build:
+  gpu: true
+  cuda: "12.1"
+  python_version: "3.11"
+  python_requirements: requirements.txt
+  system_packages:
+    - "ffmpeg"
+    - "libgl1"
+    - "libglib2.0-0"
+  run:
+    - git clone https://github.com/comfyanonymous/ComfyUI.git
+    - pip install -r ComfyUI/requirements.txt
+predict: "predict.py:Predictor"
